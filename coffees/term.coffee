@@ -1,7 +1,7 @@
 # *-* coding: utf-8 *-*
 # This file is part of butterfly
 #
-# butterfly Copyright (C) 2015  Florian Mounier
+# butterfly Copyright(C) 2015-2017 Florian Mounier
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
 # the Free Software Foundation, either version 3 of the License, or
@@ -28,12 +28,14 @@
 #   http://bellard.org/jslinux/
 
 
-
 cancel = (ev) ->
   ev.preventDefault() if ev.preventDefault
   ev.stopPropagation() if ev.stopPropagation
   ev.cancelBubble = true
   false
+
+isMobile = ->
+  /iPhone|iPad|iPod|Android/i.test navigator.userAgent
 
 s = 0
 State =
@@ -45,50 +47,84 @@ State =
   dcs: s++
   ignore: s++
 
+
 class Terminal
+  @hooks: {}
+  # Mini implementation of event
+  @on: (hook, fun) ->
+    unless Terminal.hooks[hook]?
+      Terminal.hooks[hook] = []
+    Terminal.hooks[hook].push(fun)
+
+  @off: (hook, fun) ->
+    unless Terminal.hooks[hook]?
+      Terminal.hooks[hook] = []
+    Terminal.hooks[hook].pop(fun)
+
   constructor: (@parent, @out, @ctl=->) ->
     # Global elements
     @document = @parent.ownerDocument
     @html = @document.getElementsByTagName('html')[0]
     @body = @document.getElementsByTagName('body')[0]
+    @term = @document.getElementById('term')
     @forceWidth = @body.getAttribute(
       'data-force-unicode-width') is 'yes'
+
+    # A hidden textarea to capture all input events
+    # This allows the body to receive IME composition events
+    # without being `contentEditable`, which will mess up
+    # the layout
+    @inputHelper = @document.getElementById('input-helper')
+
+    # A simple div to take place of the IME input preview
+    # which is now hidden due to the textarea
+    @inputView = @document.getElementById('input-view')
 
     # Main terminal element
     @body.className = 'terminal focus'
     @body.style.outline = 'none'
     @body.setAttribute 'tabindex', 0
     @body.setAttribute 'spellcheck', 'false'
+    @inputHelper.setAttribute 'tabindex', 0
+    @inputHelper.setAttribute 'spellcheck', 'false'
 
     # Adding one line to compute char size
     div = @document.createElement('div')
     div.className = 'line'
-    @body.appendChild(div)
-    @children = [div]
+    @term.appendChild(div)
 
     @computeCharSize()
     @cols = Math.floor(@body.clientWidth / @charSize.width)
     @rows = Math.floor(window.innerHeight / @charSize.height)
-    px = window.innerHeight % @charSize.height
-    @body.style['padding-bottom'] = "#{px}px"
-
-    @scrollback = 1000000
-    @buffSize = 100000
 
     @visualBell = 100
     @convertEol = false
     @termName = 'xterm'
     @cursorBlink = true
     @cursorState = 0
-    @stop = false
-    @lastcc = 0
+    @inComposition = false
+    @compositionText = ""
+
     @resetVars()
 
     @focus()
 
     @startBlink()
+    # IME Events should be registered to the textarea
+    # The textarea helps guiding the IME to pop up
+    # at the correct position
+    @inputHelper.addEventListener 'compositionstart',
+      @compositionStart.bind(@)
+    @inputHelper.addEventListener 'compositionupdate',
+      @compositionUpdate.bind(@)
+    @inputHelper.addEventListener 'compositionend',
+      @compositionEnd.bind(@)
     addEventListener 'keydown', @keyDown.bind(@)
     addEventListener 'keypress', @keyPress.bind(@)
+    # Always focus on the inputHelper textarea
+    addEventListener 'keyup', => @inputHelper.focus()
+    if isMobile()
+      addEventListener 'click', => @inputHelper.focus()
     addEventListener 'focus', @focus.bind(@)
     addEventListener 'blur', @blur.bind(@)
     addEventListener 'resize', => @resize()
@@ -96,12 +132,18 @@ class Terminal
       @nativeScrollTo()
     , true
 
-    # # Horrible Firefox paste workaround
-    if typeof InstallTrigger isnt "undefined"
-      @body.contentEditable = 'true'
-
     @initmouse()
     addEventListener 'load', => @resize()
+    @emit 'load'
+    @active = null
+
+  emit: (hook, obj) ->
+    unless Terminal.hooks[hook]?
+      Terminal.hooks[hook] = []
+    for fun in Terminal.hooks[hook]
+      # fun.call(@, obj)
+      setTimeout ((f) -> ->
+        f.call(@, obj))(fun), 10
 
   cloneAttr: (a, char=null) ->
     bg: a.bg
@@ -115,6 +157,7 @@ class Terminal
     italic: a.italic
     faint: a.faint
     crossed: a.crossed
+    placeholder: false
 
   equalAttr: (a, b) ->
     # Not testing char
@@ -124,12 +167,14 @@ class Terminal
       a.italic is b.italic and a.faint is b.faint and
       a.crossed is b.crossed)
 
-  putChar: (c) ->
+  putChar: (c, placeholder = false) ->
+    newChar = @cloneAttr @curAttr, c
+    newChar.placeholder = placeholder
     if @insertMode
-      @screen[@y + @shift].chars.splice(@x, 0, @cloneAttr @curAttr, c)
+      @screen[@y + @shift].chars.splice(@x, 0, newChar)
       @screen[@y + @shift].chars.pop()
     else
-      @screen[@y + @shift].chars[@x] = @cloneAttr @curAttr, c
+      @screen[@y + @shift].chars[@x] = newChar
 
     @screen[@y + @shift].dirty = true
 
@@ -149,6 +194,7 @@ class Terminal
     @applicationCursor = false
     @originMode = false
     @autowrap = true
+    @horizontalWrap = false
     @normal = null
 
     # charset
@@ -170,26 +216,28 @@ class Terminal
       italic: false
       faint: false
       crossed: false
+      placeholder: false
 
     @curAttr = @cloneAttr @defAttr
     @params = []
     @currentParam = 0
     @prefix = ""
     @screen = []
-    i = @rows
     @shift = 0
-    @screen.push @blankLine(false, false) while i--
+    for row in [0..@rows - 1]
+      @screen.push @blankLine(false, false)
     @setupStops()
     @skipNextKey = null
 
   computeCharSize: ->
     testSpan = document.createElement('span')
     testSpan.textContent = '0123456789'
-    @children[0].appendChild(testSpan)
+    line = @term.firstChild
+    line.appendChild(testSpan)
     @charSize =
       width: testSpan.getBoundingClientRect().width / 10
-      height: @children[0].getBoundingClientRect().height
-    @children[0].removeChild(testSpan)
+      height: line.getBoundingClientRect().height
+    line.removeChild(testSpan)
 
   eraseAttr: ->
     erased = @cloneAttr @defAttr
@@ -204,6 +252,7 @@ class Terminal
     @showCursor()
     @body.classList.add('focus')
     @body.classList.remove('blur')
+    @inputHelper.focus() # Always focus on the textarea
     @resize()
 
     @scrollLock = old_sl
@@ -396,169 +445,161 @@ class Terminal
         sendButton ev
         cancel ev
 
-  linkify: (t) ->
-    # http://stackoverflow.com/questions/37684/how-to-replace-plain-urls-with-links
-    urlPattern = (
-      /\b(?:https?|ftp):\/\/[a-z0-9-+&@#\/%?=~_|!:,.;]*[a-z0-9-+&@#\/%=~_|]/gim)
-    pseudoUrlPattern = /(^|[^\/])(www\.[\S]+(\b|$))/gim
-    emailAddressPattern = /[\w.]+@[a-zA-Z_-]+?(?:\.[a-zA-Z]{2,6})+/gim
-    (part
-      .replace(urlPattern, '<a href="$&">$&</a>')
-      .replace(pseudoUrlPattern, '$1<a href="http://$2">$2</a>')
-      .replace(emailAddressPattern, '<a href="mailto:$&">$&</a>'
-    ) for part in t.split('&nbsp;')).join('&nbsp;')
+  getClasses: (data) ->
+    classes = []
+    styles = []
+    # bold
+    classes.push "bold" if data.bold
+    # underline
+    classes.push "underline" if data.underline
+    # blink
+    classes.push "blink" if data.blink is 1
+    classes.push "blink-fast" if data.blink is 2
+    # inverse
+    classes.push "reverse-video" if data.inverse
+    # invisible
+    classes.push "invisible" if data.invisible
+    # italic
+    classes.push "italic" if data.italic
+    # faint
+    classes.push "faint" if data.faint
+    # crossed
+    classes.push "crossed" if data.crossed
+
+    if typeof data.fg is 'number'
+      fg = data.fg
+      if data.bold and fg < 8
+        fg += 8
+      classes.push "fg-color-" + fg
+    else if typeof data.fg is 'string'
+      styles.push "color: " + data.fg
+
+    if typeof data.bg is 'number'
+      classes.push "bg-color-" + data.bg
+    else if typeof data.bg is 'string'
+      styles.push "background-color: " + data.bg
+
+    [classes, styles]
+
+  # Fullwidth (CJK) character ranges
+  isCJK: (ch) ->
+    "\u4e00" <= ch <= "\u9fff" or # CJK Unified Ideographs
+    "\u3040" <= ch <= "\u30ff" or # Japanese Hiragana and Katakana
+    "\u31f0" <= ch <= "\u31ff" or # Japanese Katakana Phonetic Extensions
+    "\u3190" <= ch <= "\u319f" or # Japanese Kanbun symbols
+    "\u3301" <= ch <= "\u3356" or # Japanese compound characters Kumimoji (組文字)
+    "\uac00" <= ch <= "\ud7ff" or # Hangul precomposed syllables
+    "\u3000" <= ch <= "\u303f" or # CJK Punctuations and Symbols
+    "\uff00" <= ch <= "\uff60" or # Fullwidth forms
+    "\uffe0" <= ch <= "\uffe6"    # Fullwidth forms
+
+  charToDom: (data, attr, cursor) ->
+    # Just do not render if we see any placeholder characters
+    return if data.placeholder
+    return data.html if data.html
+    attr = attr or @cloneAttr @defAttr
+    ch = data.ch
+    char = ''
+    unless @equalAttr data, attr
+      char += "</span>" unless @equalAttr attr, @defAttr
+      unless @equalAttr data, @defAttr
+        [classes, styles] = @getClasses data
+        char += "<span class=\"#{classes.join(" ")}\""
+        char += " style=\"" + styles.join("; ") + "\"" if styles.length
+        char += ">"
+
+    char += "<span class=\"#{
+      if @cursorState then "reverse-video " else ""}cursor\">" if cursor
+
+    switch ch
+      when "&"
+        char += "&amp;"
+      when "<"
+        char += "&lt;"
+      when ">"
+        char += "&gt;"
+      when " "
+        char += '<span class="nbsp">\u2007</span>'
+      else
+        if ch <= " "
+          char += "&nbsp;"
+        # CJK characters should always be forced to be fullwidth
+        else unless @forceWidth or @isCJK ch
+          char += ch
+        else
+          if ch <= "~" # Ascii chars
+            char += ch
+          else if @isCJK ch # CJK always fullwidth
+            char += "<span style=\"display: inline-block; width: #{
+              2 * @charSize.width}px\">#{ch}</span>"
+          else
+            char += "<span style=\"display: inline-block; width: #{
+              @charSize.width}px\">#{ch}</span>"
+
+    char += "</span>" if cursor
+    char
+
+  lineToDom: (y, line, active) ->
+    cursorX = @x if active
+    for x in [0..@cols]
+      unless x is @cols
+        @charToDom line.chars[x], line.chars[x - 1], x is cursorX
+      else
+        eol = ''
+        eol += '</span>' unless @equalAttr line.chars[x - 1], @defAttr
+        eol += '\u23CE' if line.wrap
+        eol += "<span class=\"extra\">#{line.extra}</span>" if line.extra
+
+  screenToDom: (force) ->
+    for line, y in @screen
+      if line.dirty or force
+        active = y is @y + @shift and not @cursorHidden
+        div = document.createElement 'div'
+        div.classList.add 'line'
+        div.classList.add 'active' if active
+        div.classList.add 'extended' if line.extra
+        div.innerHTML = (@lineToDom y, line, active).join('')
+        if active
+          @active = div
+          @cursor = div.querySelectorAll('.cursor')[0]
+        div
+
+  writeDom: (dom) ->
+    r = Math.max @term.childElementCount - @rows, 0
+    for line, y in dom
+      continue unless line
+      @screen[y].dirty = false
+      if y < @rows and y < @term.childElementCount
+        @term.replaceChild(line, @term.childNodes[r + y])
+      else
+        frag = frag or document.createDocumentFragment('fragment')
+        frag.appendChild line
+      @emit 'change', line
+
+    frag and @term.appendChild frag
+
+    @shift = 0
+    @screen = @screen.slice -@rows
 
   refresh: (force=false) ->
-    for cursor in @body.querySelectorAll(".cursor")
-      cursor.parentNode.replaceChild(
-        @document.createTextNode(cursor.textContent), cursor)
-    for active in @body.querySelectorAll(".line.active")
-      active.classList.remove('active')
-
-    newOut = ''
-
-    for line, j in @screen
-      continue unless line.dirty or force
-      out = ""
-
-      if j is @y + @shift and not @cursorHidden
-        x = @x
-      else
-        x = -Infinity
-
-      attr = @cloneAttr @defAttr
-      skipnext = false
-      for i in [0..@cols - 1]
-        data = line.chars[i]
-        if data.html
-          out += data.html
-          break
-        if skipnext
-          skipnext = false
-          continue
-
-        ch = data.ch
-        unless @equalAttr data, attr
-          out += "</span>" unless @equalAttr attr, @defAttr
-          unless @equalAttr data, @defAttr
-            classes = []
-            styles = []
-            out += "<span "
-
-            # bold
-            classes.push "bold" if data.bold
-            # underline
-            classes.push "underline" if data.underline
-            # blink
-            classes.push "blink" if data.blink is 1
-            classes.push "blink-fast" if data.blink is 2
-            # inverse
-            classes.push "reverse-video" if data.inverse
-            # invisible
-            classes.push "invisible" if data.invisible
-            # italic
-            classes.push "italic" if data.italic
-            # faint
-            classes.push "faint" if data.faint
-            # crossed
-            classes.push "crossed" if data.crossed
-
-            if typeof data.fg is 'number'
-              fg = data.fg
-              if data.bold and fg < 8
-                fg += 8
-              classes.push "fg-color-" + fg
-
-            if typeof data.fg is 'string'
-              styles.push "color: " + data.fg
-
-            if typeof data.bg is 'number'
-              classes.push "bg-color-" + data.bg
-
-            if typeof data.bg is 'string'
-              styles.push "background-color: " + data.bg
-
-            out += "class=\""
-            out += classes.join(" ")
-            out += "\""
-            if styles.length
-              out += " style=\"" + styles.join("; ") + "\""
-            out += ">"
-
-        out += "<span class=\"" + (
-          if @cursorState then "reverse-video " else ""
-        ) + "cursor\">" if i is x
-
-        # This is a temporary dirty hack for raw html insertion
-        if ch.length > 1
-          out += ch
-        else
-          switch ch
-            when "&"
-              out += "&amp;"
-            when "<"
-              out += "&lt;"
-            when ">"
-              out += "&gt;"
-            else
-              if ch == " "
-                out += '<span class="nbsp">\u2007</span>'
-              else if ch <= " "
-                out += "&nbsp;"
-              else if not @forceWidth or ch <= "~" # Ascii chars
-                out += ch
-              else if "\uff00" < ch < "\uffef"
-                skipnext = true
-                out += "<span style=\"display: inline-block;
-                  width: #{2 * @charSize.width}px\">#{ch}</span>"
-              else
-                out += "<span style=\"display: inline-block;
-                  width: #{@charSize.width}px\">#{ch}</span>"
-
-        out += "</span>" if i is x
-        attr = data
-      out += "</span>" unless @equalAttr attr, @defAttr
-      out = @linkify(out) unless j is @y + @shift or data.html
-      out += '\u23CE' if line.wrap
-      if @children[j]
-        @children[j].innerHTML = out
-        if x isnt -Infinity
-          @children[j].classList.add 'active'
-      else
-        newOut += "<div class=\"line#{
-          x isnt -Infinity and ' active' or ''}\">#{out}</div>"
-      @screen[j].dirty = false
-
-    if newOut isnt ''
-      group = @document.createElement('div')
-      group.className = 'group'
-      group.innerHTML = newOut
-      @body.appendChild group
-      @screen = @screen.slice(-@rows)
-      @shift = 0
-
-      lines = document.querySelectorAll('.line')
-      if lines.length > @scrollback
-        for line in Array.prototype.slice.call(
-          lines, 0, lines.length - @scrollback)
-            line.remove()
-        for group in document.querySelectorAll('.group:empty')
-          group.remove()
-        lines = document.querySelectorAll('.line')
-      @children = Array.prototype.slice.call(
-        lines, -@rows)
-
+    if @active?
+      @active.classList.remove('active')
+    if @cursor
+      @cursor.parentNode?.replaceChild(
+        @document.createTextNode(@cursor.textContent), @cursor)
+    dom = @screenToDom(force)
+    @writeDom dom
     @nativeScrollTo()
+    @updateInputViews()
+    @emit 'refresh'
 
   _cursorBlink: ->
     @cursorState ^= 1
-    cursor = @body.querySelector(".cursor")
-    return unless cursor
-    if cursor.classList.contains("reverse-video")
-      cursor.classList.remove "reverse-video"
+    return unless @cursor
+    if @cursor.classList.contains("reverse-video")
+      @cursor.classList.remove "reverse-video"
     else
-      cursor.classList.add "reverse-video"
-
+      @cursor.classList.add "reverse-video"
 
   showCursor: ->
     unless @cursorState
@@ -566,18 +607,15 @@ class Terminal
       @screen[@y + @shift].dirty = true
       @refresh()
 
-
   startBlink: ->
     return unless @cursorBlink
     @_blinker = => @_cursorBlink()
     @t_blink = setInterval(@_blinker, 500)
 
-
   refreshBlink: ->
     return unless @cursorBlink
     clearInterval @t_blink
     @t_blink = setInterval(@_blinker, 500)
-
 
   scroll: ->
     # Use emulated scroll in alternate buffer or when scroll region is defined
@@ -635,12 +673,16 @@ class Terminal
             # '\n', '\v', '\f'
             when "\n", "\x0b", "\x0c"
               # @x = 0 if @convertEol
-              @screen[@y + @shift].dirty = true
-              @nextLine()
+              if @horizontalWrap
+                @screen[@y + @shift].extra += ch
+              else
+                @screen[@y + @shift].dirty = true
+                @nextLine()
 
             # '\r'
             when "\r"
-              @x = 0
+              unless @horizontalWrap
+                @x = 0
 
             # '\b'
             when "\b"
@@ -688,19 +730,24 @@ class Terminal
               if ch >= " "
                 ch = @charset[ch] if @charset?[ch]
                 if @x >= @cols
-                  if @autowrap
-                    @screen[@y + @shift].wrap = true
-                    @nextLine()
-                  @x = 0
-
+                  if @horizontalWrap
+                    @screen[@y + @shift].extra += ch
+                  else
+                    if @autowrap
+                      @screen[@y + @shift].wrap = true
+                      @nextLine()
+                    @x = 0
                 @putChar ch
                 @x++
-                if @forceWidth and "\uff00" < ch < "\uffef"
-                  if @cols < 2 or @x >= @cols
-                    @putChar " "
-                    break
-
-                  @putChar " "
+                if @isCJK ch
+                  # Add a dummy, placeholder character
+                  # for double-width, CJK characters
+                  # In order to fix counting of characters
+                  # when calculating for remaining cols
+                  # They are always considered to be
+                  # @forceWidth because otherwise they
+                  # do not render properly at all
+                  @putChar " ", true
                   @x++
 
         when State.escaped
@@ -1141,8 +1188,6 @@ class Terminal
             switch @prefix
               # User-Defined Keys (DECUDK).
               when ""
-                # Disabling this for now as we need a good script
-                #  striper to avoid malicious script injection
                 pt = @currentParam
                 unless pt[0] is ';'
                   console.error "Unknown DECUDK: #{pt}"
@@ -1162,8 +1207,7 @@ class Terminal
                     attr.html = (
                       "<div class=\"inline-html\">#{safe}</div>")
                     @screen[@y + @shift].chars[@x] = attr
-                    @screen[@y + @shift].dirty = true
-                    @screen[@y + @shift].wrap = false
+                    @resetLine @screen[@y + @shift]
                     @nextLine()
 
                   when "IMAGE"
@@ -1181,8 +1225,7 @@ class Terminal
                       "<img class=\"inline-image\" src=\"data:#{mime};base64,#{
                         b64}\" />")
                     @screen[@y + @shift].chars[@x] = attr
-                    @screen[@y + @shift].dirty = true
-                    @screen[@y + @shift].wrap = false
+                    @resetLine @screen[@y + @shift]
 
                   when "PROMPT"
                     @send content
@@ -1258,18 +1301,113 @@ class Terminal
   writeln: (data) ->
     @write "#{data}\r\n"
 
+  updateInputViews: ->
+    # Re-position the textarea and the preview box
+    # to the current position of the cursor
+    cursorPos = @cursor.getBoundingClientRect()
+    @inputView.style['left'] = cursorPos.left + "px"
+    @inputView.style['top'] = cursorPos.top + "px"
+    @inputHelper.style['left'] = cursorPos.left + "px"
+    @inputHelper.style['top'] = cursorPos.top + "px"
+    # Clear the textarea as often as possible
+    @inputHelper.value = ""
+
+  compositionStart: (ev) ->
+    ev.preventDefault()
+    ev.stopPropagation()
+    @updateInputViews()
+
+    # Show the preview box
+    @inputView.className = ""
+    @inputView.innerText = ""
+
+    # Hide the blinking cursor
+    @cursor.style['visibility'] = "hidden"
+
+    @inComposition = true
+    @compositionText = ""
+    return false
+
+  compositionUpdate: (ev) ->
+    ev.preventDefault()
+    ev.stopPropagation()
+    # Update the composition text
+    @compositionText = ev.data
+    @inputView.innerText = @compositionText
+    return false
+
+  compositionEnd: (ev) ->
+    ev.preventDefault()
+    ev.stopPropagation()
+    @finishComposition()
+    return false
+
+  finishComposition: ->
+    @inComposition = false
+    @showCursor()
+    @inputHelper.value = ""
+    @inputView.className = "hidden"
+    @send @compositionText
+    @compositionText = ""
+    # Force focus on the inputHelper
+    @inputHelper.focus()
+
   keyDown: (ev) ->
+    if @inComposition
+      # Continue IME composition if the character is
+      # composition key or modifier key
+      if ev.keyCode is 229
+        return false
+      else if ev.keyCode is 16 || ev.keyCode is 17 || ev.keyCode is 18
+        return false
+      # Otherwise, if we receive a keyDown, abort the composition
+      @finishComposition()
+
+    if ev.keyCode is 229
+      ev.preventDefault()
+      ev.stopPropagation()
+      # If the composition key is sent while IME not active
+      # it means that some character have been input while IME
+      # enabled, i.e. punctuations
+      # in which case we just fetch it from the text area
+      setTimeout =>
+        unless @inComposition || @inputHelper.value.length > 1
+          val = @inputHelper.value
+          @inputHelper.value = "" # Clear the value immediately
+          char = val.toUpperCase().charCodeAt(0)
+          if 65 <= char <= 90
+            # If the character sent here is a letter
+            # allow it to be overridden on mobile
+            # Combinations like "Ctrl+C" won't work without this
+            # on Chrome for Android
+            e = new KeyboardEvent 'keydown', keyCode: char
+            return if window.mobileKeydown e
+          @send val
+      , 0
+      return false
+
     # Key Resources:
     # https://developer.mozilla.org/en-US/docs/DOM/KeyboardEvent
     # Don't handle modifiers alone
     return true if ev.keyCode > 15 and ev.keyCode < 19
+    return true if window.mobileKeydown ev
+
+    if ev.keyCode is 19  # Pause break
+      @body.classList.add 'stopped'
+      @out '\x03'
+      @ws.shell.close()
+      return false
 
     # Handle shift insert and ctrl insert
     # copy/paste usefull for typematrix keyboard
     return true if (ev.shiftKey or ev.ctrlKey) and ev.keyCode is 45
 
     # Let the ctrl+shift+c, ctrl+shift+v go through to handle native copy paste
-    return true if (ev.shiftKey and ev.ctrlKey) and ev.keyCode in [67, 86]
+    if (ev.shiftKey and ev.ctrlKey) and ev.keyCode in [67, 86]
+      # Make the content temporarily ediatble, to allow the paste event
+      # to propagate (this does not work for the textarea if not set like this)
+      @body.contentEditable = true
+      return true
 
     # Alt-z works as an escape to relay the following keys to the browser.
     # usefull to trigger browser shortcuts, i.e.: Alt+Z F5 to reload
@@ -1358,14 +1496,14 @@ class Terminal
         if @applicationKeypad
           key = "\x1bOH"
           break
-        key = "\x1bOH"
+        key = "\x1b[H"
 
       # end
       when 35
         if @applicationKeypad
           key = "\x1bOF"
           break
-        key = "\x1bOF"
+        key = "\x1b[F"
 
       # page up
       when 33
@@ -1446,21 +1584,9 @@ class Terminal
         # a-z and space
         if ev.ctrlKey
           if ev.keyCode >= 65 and ev.keyCode <= 90
-            if ev.keyCode is 67
-              t = (new Date()).getTime()
-              if (t - @lastcc) < 500 and not @stop
-                id = (setTimeout ->)
-                (clearTimeout id if id not in [
-                  @t_bell, @t_queue, @t_blink]) while id--
-                @body.classList.add 'stopped'
-                @stop = true
-                return @send ' \x7f'
-              else if @stop
-                return true
-              @lastcc = t
             key = String.fromCharCode(ev.keyCode - 64)
-          else if ev.keyCode is 32
 
+          else if ev.keyCode is 32
             # NUL
             key = String.fromCharCode(0)
           else if ev.keyCode >= 51 and ev.keyCode <= 55
@@ -1559,11 +1685,13 @@ class Terminal
     oldRows = @rows
     @computeCharSize()
     w = @body.clientWidth
-    h = @html.clientHeight - (@html.offsetHeight - @html.scrollHeight)
+    h = @html.clientHeight #- (@html.offsetHeight - @html.scrollHeight)
+
+    if @charSize.width is 0 or @charSize.height is 0
+      console.error 'Null size in refresh'
+      return
     @cols = x or Math.floor(w / @charSize.width)
     @rows = y or Math.floor(h / @charSize.height)
-    px = h % @charSize.height
-    @body.style['padding-bottom'] = "#{px}px"
 
     @cols = Math.max 1, @cols
     @rows = Math.max 1, @rows
@@ -1572,74 +1700,55 @@ class Terminal
     if (not x and not y) and oldCols == @cols and oldRows == @rows
       return
 
-    @ctl 'Resize', @cols, @rows unless notif
+    @ctl(JSON.stringify(
+      cmd: 'size', cols: @cols, rows: @rows)) unless notif
 
     # resize cols
-    if oldCols < @cols
+    if @cols > oldCols
       # does xterm use the default attr?
-      i = @screen.length
-      while i--
-        @screen[i].chars.push @defAttr while @screen[i].chars.length < @cols
-        @screen[i].wrap = false
+      for line in @screen
+        line.chars.push @defAttr while line.chars.length < @cols
+        line.wrap = false
+      if @normal
+        for line in @normal.screen
+          line.chars.push @defAttr while line.chars.length < @cols
+          line.wrap = false
 
-    else if oldCols > @cols
-      i = @screen.length
-      while i--
-        @screen[i].chars.pop() while @screen[i].chars.length > @cols
+    else if @cols < oldCols
+      for line in @screen
+        line.chars.pop() while line.chars.length > @cols
+      if @normal
+        for line in @normal.screen
+          line.chars.pop() while line.chars.length > @cols
 
     @setupStops oldCols
 
+    if @term.childElementCount >= @rows
+      @y += @rows - oldRows
+      insert = 'unshift'
+    else
+      insert = 'push'
+
     # resize rows
-    j = oldRows
-    if j < @rows
-      el = @body
-      while j++ < @rows
-        @screen.push @blankLine() if @screen.length < @rows
-        if @children.length < @rows
-          line = @document.createElement("div")
-          line.className = 'line'
-          el.appendChild line
-          @children.push line
-    else if j > @rows
-      while j-- > @rows
-        @screen.pop() if @screen.length > @rows
-        if @children.length > @rows
-          el = @children.pop()
-          el?.parentNode.removeChild el
+    while @screen.length > @rows
+      @screen.shift()
+    while @screen.length < @rows
+      @screen[insert] @blankLine(false, false)
 
     if @normal
-      # resize cols
-      if oldCols < @cols
-        # does xterm use the default attr?
-        i = @normal.screen.length
-        while i--
-          while @normal.screen[i].chars.length < @cols
-            @normal.screen[i].chars.push @defAttr
-          @normal.screen[i].wrap = false
-
-      else if oldCols > @cols
-        i = @normal.screen.length
-        while i--
-          while @normal.screen[i].chars.length > @cols
-            @normal.screen[i].chars.pop()
-
-      # resize rows
-      j = oldRows
-      if j < @rows
-        while j++ < @rows
-          @normal.screen.push @blankLine() if @normal.screen.length < @rows
-      else if j > @rows
-        while j-- > @rows
-          @normal.screen.pop() if @normal.screen.length > @rows
+      while @normal.screen.length > @rows
+        @normal.screen.shift()
+      while @normal.screen.length < @rows
+        @normal.screen[insert] @blankLine(false, false)
 
     # make sure the cursor stays on screen
     @y = @rows - 1 if @y >= @rows
+    @y = 0 if @y < 0
     @x = @cols - 1 if @x >= @cols
-
     @scrollTop = 0
     @scrollBottom = @rows - 1
 
-    @refresh(true)
+    @refresh()
     @reset() if not notif and (x or y)
 
   resizeWindowPlease: (cols) ->
@@ -1679,17 +1788,20 @@ class Terminal
     while x < @cols
       line[x] = @eraseAttr()
       x++
-    @screen[y + @shift].dirty = true
-    @screen[y + @shift].wrap = false
+    @resetLine @screen[y + @shift]
 
   eraseLeft: (x, y) ->
     x++
     @screen[y + @shift].chars[x] = @eraseAttr() while x--
-    @screen[y + @shift].dirty = true
-    @screen[y + @shift].wrap = false
+    @resetLine @screen[y + @shift]
 
   eraseLine: (y) ->
     @eraseRight 0, y
+
+  resetLine: (l) ->
+    l.dirty = true
+    l.wrap = false
+    l.extra = ''
 
   blankLine: (cur=false, dirty=true) ->
     attr = (if cur then @eraseAttr() else @defAttr)
@@ -1702,6 +1814,7 @@ class Terminal
     chars: line
     dirty: dirty
     wrap: false
+    extra: ''
 
   ch: (cur) ->
     if cur then @eraseAttr() else @defAttr
@@ -1735,17 +1848,9 @@ class Terminal
   clearScrollback: ->
     # In case of real hard reset
     # Drop DOM history
-    lines = document.querySelectorAll('.line')
-    if lines.length > @rows
-      for line in Array.prototype.slice.call(
-        lines, 0, lines.length - @rows)
-          line.remove()
-      for group in document.querySelectorAll('.group:empty')
-        group.remove()
-      lines = document.querySelectorAll('.line')
-    @children = Array.prototype.slice.call(
-      lines, -@rows)
-
+    while @term.childElementCount > @rows
+      @term.firstChild.remove()
+    @emit 'clear'
 
   # ESC H Tab Set (HTS is 0x88).
   tabSet: ->
@@ -2166,8 +2271,8 @@ class Terminal
       @screen.splice @scrollBottom + @shift, 0, @blankLine(true)
       @screen.splice @y + @shift, 1
       unless @normal or @scrollTop isnt 0 or @scrollBottom isnt @rows - 1
-        @children[@y + @shift].remove()
-        @children.splice @y + @shift, 1
+        node = @term.childElementCount - @rows + @y + @shift
+        @term.childNodes[node].remove()
 
     if @normal or @scrollTop isnt 0 or @scrollBottom isnt @rows - 1
       for i in [@y + @shift..@screen.length - 1]
@@ -2182,8 +2287,7 @@ class Terminal
     while param--
       @screen[@y + @shift].chars.splice @x, 1
       @screen[@y + @shift].chars.push @eraseAttr()
-    @screen[@y + @shift].dirty = true
-    @screen[@y + @shift].wrap = false
+    @resetLine @screen[@y + @shift]
 
   # CSI Ps X
   # Erase Ps Character(s) (default = 1) (ECH).
@@ -2193,8 +2297,7 @@ class Terminal
     j = @x
     # xterm
     @screen[@y + @shift].chars[j++] = @eraseAttr() while param-- and j < @cols
-    @screen[@y + @shift].dirty = true
-    @screen[@y + @shift].wrap = false
+    @resetLine @screen[@y + @shift]
 
   # CSI Pm `    Character Position Absolute
   #     [column] (default = [row,1]) (HPA).
@@ -2423,6 +2526,8 @@ class Terminal
           @autowrap = true
         when 66
           @applicationKeypad = true
+        when 77
+          @horizontalWrap = true
         # X10 Mouse
         # no release, no motion, no wheel, no modifiers.
         when 9, 1000, 1002, 1003 # any event mouse
@@ -2455,8 +2560,7 @@ class Terminal
         # motion: ^[[b;x;yT
         when 25 # show cursor
           @cursorHidden = false
-        # alt screen buffer cursor
-        #@saveCursor();
+
         when 1049, 47, 1047 # alt screen buffer
           unless @normal
             normal =
@@ -2585,6 +2689,8 @@ class Terminal
           @autowrap = false
         when 66
           @applicationKeypad = false
+        when 77
+          @horizontalWrap = false
         when 9, 1000, 1002 , 1003 # any event mouse
           @x10Mouse = false
           @vt200Mouse = false
@@ -3165,8 +3271,7 @@ class Terminal
       while i < l
         @screen[i].chars.splice @x, 1
         @screen[i].chars.push @eraseAttr()
-        @screen[i].dirty = true
-        @screen[i].wrap = false
+        @resetLine @screen[i].dirty
         i++
 
   # DEC Special Character and Line Drawing Set.

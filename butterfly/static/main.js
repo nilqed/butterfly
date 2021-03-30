@@ -1,6 +1,5 @@
 (function() {
-  var $, State, Terminal, cancel, cols, openTs, quit, rows, s,
-    slice = [].slice,
+  var $, State, Terminal, cancel, cols, isMobile, openTs, quit, rows, s, ws,
     indexOf = [].indexOf || function(item) { for (var i = 0, l = this.length; i < l; i++) { if (i in this && this[i] === item) return i; } return -1; };
 
   cols = rows = null;
@@ -9,123 +8,117 @@
 
   openTs = (new Date()).getTime();
 
+  ws = {
+    shell: null,
+    ctl: null
+  };
+
   $ = document.querySelectorAll.bind(document);
 
   document.addEventListener('DOMContentLoaded', function() {
-    var ctl, lastData, queue, send, t_queue, term, treat, ws, wsUrl;
+    var close, ctl, error, init_ctl_ws, init_shell_ws, open, path, reopenOnClose, rootPath, term, write, write_request, wsUrl;
     term = null;
-    send = function(data) {
-      return ws.send('S' + data);
-    };
-    ctl = function() {
-      var args, params, type;
-      type = arguments[0], args = 2 <= arguments.length ? slice.call(arguments, 1) : [];
-      params = args.join(',');
-      if (type === 'Resize') {
-        return ws.send('R' + params);
-      }
-    };
     if (location.protocol === 'https:') {
       wsUrl = 'wss://';
     } else {
       wsUrl = 'ws://';
     }
-    wsUrl += document.location.host + '/ws' + location.pathname;
-    ws = new WebSocket(wsUrl);
-    ws.addEventListener('open', function() {
+    rootPath = document.body.getAttribute('data-root-path');
+    rootPath = rootPath.replace(/^\/+|\/+$/g, '');
+    if (rootPath.length) {
+      rootPath = "/" + rootPath;
+    }
+    wsUrl += document.location.host + rootPath;
+    path = '/';
+    if (path.indexOf('/session') < 0) {
+      path += "session/" + (document.body.getAttribute('data-session-token'));
+    }
+    path += location.search;
+    ws.shell = new WebSocket(wsUrl + '/ws' + path);
+    ws.ctl = new WebSocket(wsUrl + '/ctl' + path);
+    open = function() {
       console.log("WebSocket open", arguments);
-      term = new Terminal(document.body, send, ctl);
-      term.ws = ws;
-      window.butterfly = term;
-      ws.send('R' + term.cols + ',' + term.rows);
-      return openTs = (new Date()).getTime();
-    });
-    ws.addEventListener('error', function() {
-      return console.log("WebSocket error", arguments);
-    });
-    lastData = '';
-    t_queue = null;
-    queue = '';
-    ws.addEventListener('message', function(e) {
-      var ref;
-      if (e.data[0] === 'R') {
-        ref = e.data.slice(1).split(','), cols = ref[0], rows = ref[1];
-        term.resize(cols, rows, true);
-        return;
-      }
-      if (e.data[0] !== 'S') {
-        console.error('Garbage message');
-        return;
-      }
-      if (t_queue) {
-        clearTimeout(t_queue);
-      }
-      queue += e.data.slice(1);
-      if (term.stop) {
-        queue = queue.slice(-10 * 1024);
-      }
-      if (queue.length > term.buffSize) {
-        return treat();
-      } else {
-        return t_queue = setTimeout(treat, 1);
-      }
-    });
-    treat = function() {
-      term.write(queue);
-      if (term.stop) {
-        term.stop = false;
+      if (term) {
         term.body.classList.remove('stopped');
+        term.out = ws.shell.send.bind(ws.shell);
+        term.out('\x03\n');
+        return;
       }
-      return queue = '';
+      if (ws.shell.readyState === WebSocket.OPEN && ws.ctl.readyState === WebSocket.OPEN) {
+        term = new Terminal(document.body, ws.shell.send.bind(ws.shell), ws.ctl.send.bind(ws.ctl));
+        term.ws = ws;
+        window.butterfly = term;
+        ws.ctl.send(JSON.stringify({
+          cmd: 'open'
+        }));
+        ws.ctl.send(JSON.stringify({
+          cmd: 'size',
+          cols: term.cols,
+          rows: term.rows
+        }));
+        openTs = (new Date()).getTime();
+      }
+      return console.log("WebSocket open end", arguments);
     };
-    ws.addEventListener('close', function() {
+    error = function() {
+      return console.error("WebSocket error", arguments);
+    };
+    close = function() {
       console.log("WebSocket closed", arguments);
-      setTimeout(function() {
-        term.write('Closed');
-        term.skipNextKey = true;
-        term.body.classList.add('dead');
-        if ((new Date()).getTime() - openTs > 60 * 1000) {
-          return open('', '_self').close();
+      if (quit) {
+        return;
+      }
+      quit = true;
+      term.write('Closed');
+      term.skipNextKey = true;
+      term.body.classList.add('dead');
+      if ((new Date()).getTime() - openTs > 60 * 1000) {
+        return window.open('', '_self').close();
+      }
+    };
+    reopenOnClose = function() {
+      return setTimeout(function() {
+        if (quit) {
+          return;
         }
-      }, 1);
-      return quit = true;
-    });
-    addEventListener('beforeunload', function() {
+        ws.shell = new WebSocket(wsUrl + '/ws' + path);
+        return init_shell_ws();
+      }, 100);
+    };
+    write = function(data) {
+      if (term) {
+        return term.write(data);
+      }
+    };
+    write_request = function(e) {
+      return setTimeout(write, 1, e.data);
+    };
+    ctl = function(e) {
+      var cmd;
+      cmd = JSON.parse(e.data);
+      if (cmd.cmd === 'size') {
+        return term.resize(cmd.cols, cmd.rows, true);
+      }
+    };
+    init_shell_ws = function() {
+      ws.shell.addEventListener('open', open);
+      ws.shell.addEventListener('message', write_request);
+      ws.shell.addEventListener('error', error);
+      return ws.shell.addEventListener('close', reopenOnClose);
+    };
+    init_ctl_ws = function() {
+      ws.ctl.addEventListener('open', open);
+      ws.ctl.addEventListener('message', ctl);
+      ws.ctl.addEventListener('error', error);
+      return ws.ctl.addEventListener('close', close);
+    };
+    init_shell_ws();
+    init_ctl_ws();
+    return addEventListener('beforeunload', function() {
       if (!quit) {
         return 'This will exit the terminal session';
       }
     });
-    window.bench = function(n) {
-      var rnd;
-      if (n == null) {
-        n = 100000000;
-      }
-      rnd = '';
-      while (rnd.length < n) {
-        rnd += Math.random().toString(36).substring(2);
-      }
-      console.time('bench');
-      console.profile('bench');
-      term.write(rnd);
-      console.profileEnd();
-      return console.timeEnd('bench');
-    };
-    return window.cbench = function(n) {
-      var rnd;
-      if (n == null) {
-        n = 100000000;
-      }
-      rnd = '';
-      while (rnd.length < n) {
-        rnd += "\x1b[" + (30 + parseInt(Math.random() * 20)) + "m";
-        rnd += Math.random().toString(36).substring(2);
-      }
-      console.time('cbench');
-      console.profile('cbench');
-      term.write(rnd);
-      console.profileEnd();
-      return console.timeEnd('cbench');
-    };
   });
 
   cancel = function(ev) {
@@ -137,6 +130,10 @@
     }
     ev.cancelBubble = true;
     return false;
+  };
+
+  isMobile = function() {
+    return /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
   };
 
   s = 0;
@@ -152,42 +149,73 @@
   };
 
   Terminal = (function() {
-    function Terminal(parent, out1, ctl1) {
-      var div, px;
+    Terminal.hooks = {};
+
+    Terminal.on = function(hook, fun) {
+      if (Terminal.hooks[hook] == null) {
+        Terminal.hooks[hook] = [];
+      }
+      return Terminal.hooks[hook].push(fun);
+    };
+
+    Terminal.off = function(hook, fun) {
+      if (Terminal.hooks[hook] == null) {
+        Terminal.hooks[hook] = [];
+      }
+      return Terminal.hooks[hook].pop(fun);
+    };
+
+    function Terminal(parent, out, ctl1) {
+      var div;
       this.parent = parent;
-      this.out = out1;
+      this.out = out;
       this.ctl = ctl1 != null ? ctl1 : function() {};
       this.document = this.parent.ownerDocument;
       this.html = this.document.getElementsByTagName('html')[0];
       this.body = this.document.getElementsByTagName('body')[0];
+      this.term = this.document.getElementById('term');
       this.forceWidth = this.body.getAttribute('data-force-unicode-width') === 'yes';
+      this.inputHelper = this.document.getElementById('input-helper');
+      this.inputView = this.document.getElementById('input-view');
       this.body.className = 'terminal focus';
       this.body.style.outline = 'none';
       this.body.setAttribute('tabindex', 0);
       this.body.setAttribute('spellcheck', 'false');
+      this.inputHelper.setAttribute('tabindex', 0);
+      this.inputHelper.setAttribute('spellcheck', 'false');
       div = this.document.createElement('div');
       div.className = 'line';
-      this.body.appendChild(div);
-      this.children = [div];
+      this.term.appendChild(div);
       this.computeCharSize();
       this.cols = Math.floor(this.body.clientWidth / this.charSize.width);
       this.rows = Math.floor(window.innerHeight / this.charSize.height);
-      px = window.innerHeight % this.charSize.height;
-      this.body.style['padding-bottom'] = px + "px";
-      this.scrollback = 1000000;
-      this.buffSize = 100000;
       this.visualBell = 100;
       this.convertEol = false;
       this.termName = 'xterm';
       this.cursorBlink = true;
       this.cursorState = 0;
-      this.stop = false;
-      this.lastcc = 0;
+      this.inComposition = false;
+      this.compositionText = "";
       this.resetVars();
       this.focus();
       this.startBlink();
+      this.inputHelper.addEventListener('compositionstart', this.compositionStart.bind(this));
+      this.inputHelper.addEventListener('compositionupdate', this.compositionUpdate.bind(this));
+      this.inputHelper.addEventListener('compositionend', this.compositionEnd.bind(this));
       addEventListener('keydown', this.keyDown.bind(this));
       addEventListener('keypress', this.keyPress.bind(this));
+      addEventListener('keyup', (function(_this) {
+        return function() {
+          return _this.inputHelper.focus();
+        };
+      })(this));
+      if (isMobile()) {
+        addEventListener('click', (function(_this) {
+          return function() {
+            return _this.inputHelper.focus();
+          };
+        })(this));
+      }
       addEventListener('focus', this.focus.bind(this));
       addEventListener('blur', this.blur.bind(this));
       addEventListener('resize', (function(_this) {
@@ -200,16 +228,33 @@
           return _this.nativeScrollTo();
         };
       })(this), true);
-      if (typeof InstallTrigger !== "undefined") {
-        this.body.contentEditable = 'true';
-      }
       this.initmouse();
       addEventListener('load', (function(_this) {
         return function() {
           return _this.resize();
         };
       })(this));
+      this.emit('load');
+      this.active = null;
     }
+
+    Terminal.prototype.emit = function(hook, obj) {
+      var fun, k, len, ref, results;
+      if (Terminal.hooks[hook] == null) {
+        Terminal.hooks[hook] = [];
+      }
+      ref = Terminal.hooks[hook];
+      results = [];
+      for (k = 0, len = ref.length; k < len; k++) {
+        fun = ref[k];
+        results.push(setTimeout((function(f) {
+          return function() {
+            return f.call(this, obj);
+          };
+        })(fun), 10));
+      }
+      return results;
+    };
 
     Terminal.prototype.cloneAttr = function(a, char) {
       if (char == null) {
@@ -226,7 +271,8 @@
         invisible: a.invisible,
         italic: a.italic,
         faint: a.faint,
-        crossed: a.crossed
+        crossed: a.crossed,
+        placeholder: false
       };
     };
 
@@ -234,18 +280,24 @@
       return a.bg === b.bg && a.fg === b.fg && a.bold === b.bold && a.underline === b.underline && a.blink === b.blink && a.inverse === b.inverse && a.invisible === b.invisible && a.italic === b.italic && a.faint === b.faint && a.crossed === b.crossed;
     };
 
-    Terminal.prototype.putChar = function(c) {
+    Terminal.prototype.putChar = function(c, placeholder) {
+      var newChar;
+      if (placeholder == null) {
+        placeholder = false;
+      }
+      newChar = this.cloneAttr(this.curAttr, c);
+      newChar.placeholder = placeholder;
       if (this.insertMode) {
-        this.screen[this.y + this.shift].chars.splice(this.x, 0, this.cloneAttr(this.curAttr, c));
+        this.screen[this.y + this.shift].chars.splice(this.x, 0, newChar);
         this.screen[this.y + this.shift].chars.pop();
       } else {
-        this.screen[this.y + this.shift].chars[this.x] = this.cloneAttr(this.curAttr, c);
+        this.screen[this.y + this.shift].chars[this.x] = newChar;
       }
       return this.screen[this.y + this.shift].dirty = true;
     };
 
     Terminal.prototype.resetVars = function() {
-      var i;
+      var k, ref, row;
       this.x = 0;
       this.y = 0;
       this.cursorHidden = false;
@@ -258,6 +310,7 @@
       this.applicationCursor = false;
       this.originMode = false;
       this.autowrap = true;
+      this.horizontalWrap = false;
       this.normal = null;
       this.charset = null;
       this.gcharset = null;
@@ -274,16 +327,16 @@
         invisible: false,
         italic: false,
         faint: false,
-        crossed: false
+        crossed: false,
+        placeholder: false
       };
       this.curAttr = this.cloneAttr(this.defAttr);
       this.params = [];
       this.currentParam = 0;
       this.prefix = "";
       this.screen = [];
-      i = this.rows;
       this.shift = 0;
-      while (i--) {
+      for (row = k = 0, ref = this.rows - 1; 0 <= ref ? k <= ref : k >= ref; row = 0 <= ref ? ++k : --k) {
         this.screen.push(this.blankLine(false, false));
       }
       this.setupStops();
@@ -291,15 +344,16 @@
     };
 
     Terminal.prototype.computeCharSize = function() {
-      var testSpan;
+      var line, testSpan;
       testSpan = document.createElement('span');
       testSpan.textContent = '0123456789';
-      this.children[0].appendChild(testSpan);
+      line = this.term.firstChild;
+      line.appendChild(testSpan);
       this.charSize = {
         width: testSpan.getBoundingClientRect().width / 10,
-        height: this.children[0].getBoundingClientRect().height
+        height: line.getBoundingClientRect().height
       };
-      return this.children[0].removeChild(testSpan);
+      return line.removeChild(testSpan);
     };
 
     Terminal.prototype.eraseAttr = function() {
@@ -319,6 +373,7 @@
       this.showCursor();
       this.body.classList.add('focus');
       this.body.classList.remove('blur');
+      this.inputHelper.focus();
       this.resize();
       return this.scrollLock = old_sl;
     };
@@ -510,216 +565,226 @@
       })(this));
     };
 
-    Terminal.prototype.linkify = function(t) {
-      var emailAddressPattern, part, pseudoUrlPattern, urlPattern;
-      urlPattern = /\b(?:https?|ftp):\/\/[a-z0-9-+&@#\/%?=~_|!:,.;]*[a-z0-9-+&@#\/%=~_|]/gim;
-      pseudoUrlPattern = /(^|[^\/])(www\.[\S]+(\b|$))/gim;
-      emailAddressPattern = /[\w.]+@[a-zA-Z_-]+?(?:\.[a-zA-Z]{2,6})+/gim;
-      return ((function() {
-        var k, len, ref, results;
-        ref = t.split('&nbsp;');
-        results = [];
-        for (k = 0, len = ref.length; k < len; k++) {
-          part = ref[k];
-          results.push(part.replace(urlPattern, '<a href="$&">$&</a>').replace(pseudoUrlPattern, '$1<a href="http://$2">$2</a>').replace(emailAddressPattern, '<a href="mailto:$&">$&</a>'));
+    Terminal.prototype.getClasses = function(data) {
+      var classes, fg, styles;
+      classes = [];
+      styles = [];
+      if (data.bold) {
+        classes.push("bold");
+      }
+      if (data.underline) {
+        classes.push("underline");
+      }
+      if (data.blink === 1) {
+        classes.push("blink");
+      }
+      if (data.blink === 2) {
+        classes.push("blink-fast");
+      }
+      if (data.inverse) {
+        classes.push("reverse-video");
+      }
+      if (data.invisible) {
+        classes.push("invisible");
+      }
+      if (data.italic) {
+        classes.push("italic");
+      }
+      if (data.faint) {
+        classes.push("faint");
+      }
+      if (data.crossed) {
+        classes.push("crossed");
+      }
+      if (typeof data.fg === 'number') {
+        fg = data.fg;
+        if (data.bold && fg < 8) {
+          fg += 8;
         }
-        return results;
-      })()).join('&nbsp;');
+        classes.push("fg-color-" + fg);
+      } else if (typeof data.fg === 'string') {
+        styles.push("color: " + data.fg);
+      }
+      if (typeof data.bg === 'number') {
+        classes.push("bg-color-" + data.bg);
+      } else if (typeof data.bg === 'string') {
+        styles.push("background-color: " + data.bg);
+      }
+      return [classes, styles];
+    };
+
+    Terminal.prototype.isCJK = function(ch) {
+      return ("\u4e00" <= ch && ch <= "\u9fff") || ("\u3040" <= ch && ch <= "\u30ff") || ("\u31f0" <= ch && ch <= "\u31ff") || ("\u3190" <= ch && ch <= "\u319f") || ("\u3301" <= ch && ch <= "\u3356") || ("\uac00" <= ch && ch <= "\ud7ff") || ("\u3000" <= ch && ch <= "\u303f") || ("\uff00" <= ch && ch <= "\uff60") || ("\uffe0" <= ch && ch <= "\uffe6");
+    };
+
+    Terminal.prototype.charToDom = function(data, attr, cursor) {
+      var ch, char, classes, ref, styles;
+      if (data.placeholder) {
+        return;
+      }
+      if (data.html) {
+        return data.html;
+      }
+      attr = attr || this.cloneAttr(this.defAttr);
+      ch = data.ch;
+      char = '';
+      if (!this.equalAttr(data, attr)) {
+        if (!this.equalAttr(attr, this.defAttr)) {
+          char += "</span>";
+        }
+        if (!this.equalAttr(data, this.defAttr)) {
+          ref = this.getClasses(data), classes = ref[0], styles = ref[1];
+          char += "<span class=\"" + (classes.join(" ")) + "\"";
+          if (styles.length) {
+            char += " style=\"" + styles.join("; ") + "\"";
+          }
+          char += ">";
+        }
+      }
+      if (cursor) {
+        char += "<span class=\"" + (this.cursorState ? "reverse-video " : "") + "cursor\">";
+      }
+      switch (ch) {
+        case "&":
+          char += "&amp;";
+          break;
+        case "<":
+          char += "&lt;";
+          break;
+        case ">":
+          char += "&gt;";
+          break;
+        case " ":
+          char += '<span class="nbsp">\u2007</span>';
+          break;
+        default:
+          if (ch <= " ") {
+            char += "&nbsp;";
+          } else if (!(this.forceWidth || this.isCJK(ch))) {
+            char += ch;
+          } else {
+            if (ch <= "~") {
+              char += ch;
+            } else if (this.isCJK(ch)) {
+              char += "<span style=\"display: inline-block; width: " + (2 * this.charSize.width) + "px\">" + ch + "</span>";
+            } else {
+              char += "<span style=\"display: inline-block; width: " + this.charSize.width + "px\">" + ch + "</span>";
+            }
+          }
+      }
+      if (cursor) {
+        char += "</span>";
+      }
+      return char;
+    };
+
+    Terminal.prototype.lineToDom = function(y, line, active) {
+      var cursorX, eol, k, ref, results, x;
+      if (active) {
+        cursorX = this.x;
+      }
+      results = [];
+      for (x = k = 0, ref = this.cols; 0 <= ref ? k <= ref : k >= ref; x = 0 <= ref ? ++k : --k) {
+        if (x !== this.cols) {
+          results.push(this.charToDom(line.chars[x], line.chars[x - 1], x === cursorX));
+        } else {
+          eol = '';
+          if (!this.equalAttr(line.chars[x - 1], this.defAttr)) {
+            eol += '</span>';
+          }
+          if (line.wrap) {
+            eol += '\u23CE';
+          }
+          if (line.extra) {
+            results.push(eol += "<span class=\"extra\">" + line.extra + "</span>");
+          } else {
+            results.push(void 0);
+          }
+        }
+      }
+      return results;
+    };
+
+    Terminal.prototype.screenToDom = function(force) {
+      var active, div, k, len, line, ref, results, y;
+      ref = this.screen;
+      results = [];
+      for (y = k = 0, len = ref.length; k < len; y = ++k) {
+        line = ref[y];
+        if (line.dirty || force) {
+          active = y === this.y + this.shift && !this.cursorHidden;
+          div = document.createElement('div');
+          div.classList.add('line');
+          if (active) {
+            div.classList.add('active');
+          }
+          if (line.extra) {
+            div.classList.add('extended');
+          }
+          div.innerHTML = (this.lineToDom(y, line, active)).join('');
+          if (active) {
+            this.active = div;
+            this.cursor = div.querySelectorAll('.cursor')[0];
+          }
+          results.push(div);
+        } else {
+          results.push(void 0);
+        }
+      }
+      return results;
+    };
+
+    Terminal.prototype.writeDom = function(dom) {
+      var frag, k, len, line, r, y;
+      r = Math.max(this.term.childElementCount - this.rows, 0);
+      for (y = k = 0, len = dom.length; k < len; y = ++k) {
+        line = dom[y];
+        if (!line) {
+          continue;
+        }
+        this.screen[y].dirty = false;
+        if (y < this.rows && y < this.term.childElementCount) {
+          this.term.replaceChild(line, this.term.childNodes[r + y]);
+        } else {
+          frag = frag || document.createDocumentFragment('fragment');
+          frag.appendChild(line);
+        }
+        this.emit('change', line);
+      }
+      frag && this.term.appendChild(frag);
+      this.shift = 0;
+      return this.screen = this.screen.slice(-this.rows);
     };
 
     Terminal.prototype.refresh = function(force) {
-      var active, attr, ch, classes, cursor, data, fg, group, i, j, k, len, len1, len2, len3, len4, line, lines, m, newOut, o, out, q, ref, ref1, ref2, ref3, ref4, ref5, skipnext, styles, u, v, x;
+      var dom, ref;
       if (force == null) {
         force = false;
       }
-      ref = this.body.querySelectorAll(".cursor");
-      for (k = 0, len = ref.length; k < len; k++) {
-        cursor = ref[k];
-        cursor.parentNode.replaceChild(this.document.createTextNode(cursor.textContent), cursor);
+      if (this.active != null) {
+        this.active.classList.remove('active');
       }
-      ref1 = this.body.querySelectorAll(".line.active");
-      for (m = 0, len1 = ref1.length; m < len1; m++) {
-        active = ref1[m];
-        active.classList.remove('active');
+      if (this.cursor) {
+        if ((ref = this.cursor.parentNode) != null) {
+          ref.replaceChild(this.document.createTextNode(this.cursor.textContent), this.cursor);
+        }
       }
-      newOut = '';
-      ref2 = this.screen;
-      for (j = o = 0, len2 = ref2.length; o < len2; j = ++o) {
-        line = ref2[j];
-        if (!(line.dirty || force)) {
-          continue;
-        }
-        out = "";
-        if (j === this.y + this.shift && !this.cursorHidden) {
-          x = this.x;
-        } else {
-          x = -Infinity;
-        }
-        attr = this.cloneAttr(this.defAttr);
-        skipnext = false;
-        for (i = q = 0, ref3 = this.cols - 1; 0 <= ref3 ? q <= ref3 : q >= ref3; i = 0 <= ref3 ? ++q : --q) {
-          data = line.chars[i];
-          if (data.html) {
-            out += data.html;
-            break;
-          }
-          if (skipnext) {
-            skipnext = false;
-            continue;
-          }
-          ch = data.ch;
-          if (!this.equalAttr(data, attr)) {
-            if (!this.equalAttr(attr, this.defAttr)) {
-              out += "</span>";
-            }
-            if (!this.equalAttr(data, this.defAttr)) {
-              classes = [];
-              styles = [];
-              out += "<span ";
-              if (data.bold) {
-                classes.push("bold");
-              }
-              if (data.underline) {
-                classes.push("underline");
-              }
-              if (data.blink === 1) {
-                classes.push("blink");
-              }
-              if (data.blink === 2) {
-                classes.push("blink-fast");
-              }
-              if (data.inverse) {
-                classes.push("reverse-video");
-              }
-              if (data.invisible) {
-                classes.push("invisible");
-              }
-              if (data.italic) {
-                classes.push("italic");
-              }
-              if (data.faint) {
-                classes.push("faint");
-              }
-              if (data.crossed) {
-                classes.push("crossed");
-              }
-              if (typeof data.fg === 'number') {
-                fg = data.fg;
-                if (data.bold && fg < 8) {
-                  fg += 8;
-                }
-                classes.push("fg-color-" + fg);
-              }
-              if (typeof data.fg === 'string') {
-                styles.push("color: " + data.fg);
-              }
-              if (typeof data.bg === 'number') {
-                classes.push("bg-color-" + data.bg);
-              }
-              if (typeof data.bg === 'string') {
-                styles.push("background-color: " + data.bg);
-              }
-              out += "class=\"";
-              out += classes.join(" ");
-              out += "\"";
-              if (styles.length) {
-                out += " style=\"" + styles.join("; ") + "\"";
-              }
-              out += ">";
-            }
-          }
-          if (i === x) {
-            out += "<span class=\"" + (this.cursorState ? "reverse-video " : "") + "cursor\">";
-          }
-          if (ch.length > 1) {
-            out += ch;
-          } else {
-            switch (ch) {
-              case "&":
-                out += "&amp;";
-                break;
-              case "<":
-                out += "&lt;";
-                break;
-              case ">":
-                out += "&gt;";
-                break;
-              default:
-                if (ch === " ") {
-                  out += '<span class="nbsp">\u2007</span>';
-                } else if (ch <= " ") {
-                  out += "&nbsp;";
-                } else if (!this.forceWidth || ch <= "~") {
-                  out += ch;
-                } else if (("\uff00" < ch && ch < "\uffef")) {
-                  skipnext = true;
-                  out += "<span style=\"display: inline-block; width: " + (2 * this.charSize.width) + "px\">" + ch + "</span>";
-                } else {
-                  out += "<span style=\"display: inline-block; width: " + this.charSize.width + "px\">" + ch + "</span>";
-                }
-            }
-          }
-          if (i === x) {
-            out += "</span>";
-          }
-          attr = data;
-        }
-        if (!this.equalAttr(attr, this.defAttr)) {
-          out += "</span>";
-        }
-        if (!(j === this.y + this.shift || data.html)) {
-          out = this.linkify(out);
-        }
-        if (line.wrap) {
-          out += '\u23CE';
-        }
-        if (this.children[j]) {
-          this.children[j].innerHTML = out;
-          if (x !== -Infinity) {
-            this.children[j].classList.add('active');
-          }
-        } else {
-          newOut += "<div class=\"line" + (x !== -Infinity && ' active' || '') + "\">" + out + "</div>";
-        }
-        this.screen[j].dirty = false;
-      }
-      if (newOut !== '') {
-        group = this.document.createElement('div');
-        group.className = 'group';
-        group.innerHTML = newOut;
-        this.body.appendChild(group);
-        this.screen = this.screen.slice(-this.rows);
-        this.shift = 0;
-        lines = document.querySelectorAll('.line');
-        if (lines.length > this.scrollback) {
-          ref4 = Array.prototype.slice.call(lines, 0, lines.length - this.scrollback);
-          for (u = 0, len3 = ref4.length; u < len3; u++) {
-            line = ref4[u];
-            line.remove();
-          }
-          ref5 = document.querySelectorAll('.group:empty');
-          for (v = 0, len4 = ref5.length; v < len4; v++) {
-            group = ref5[v];
-            group.remove();
-          }
-          lines = document.querySelectorAll('.line');
-        }
-        this.children = Array.prototype.slice.call(lines, -this.rows);
-      }
-      return this.nativeScrollTo();
+      dom = this.screenToDom(force);
+      this.writeDom(dom);
+      this.nativeScrollTo();
+      this.updateInputViews();
+      return this.emit('refresh');
     };
 
     Terminal.prototype._cursorBlink = function() {
-      var cursor;
       this.cursorState ^= 1;
-      cursor = this.body.querySelector(".cursor");
-      if (!cursor) {
+      if (!this.cursor) {
         return;
       }
-      if (cursor.classList.contains("reverse-video")) {
-        return cursor.classList.remove("reverse-video");
+      if (this.cursor.classList.contains("reverse-video")) {
+        return this.cursor.classList.remove("reverse-video");
       } else {
-        return cursor.classList.add("reverse-video");
+        return this.cursor.classList.add("reverse-video");
       }
     };
 
@@ -823,11 +888,17 @@
               case "\n":
               case "\x0b":
               case "\x0c":
-                this.screen[this.y + this.shift].dirty = true;
-                this.nextLine();
+                if (this.horizontalWrap) {
+                  this.screen[this.y + this.shift].extra += ch;
+                } else {
+                  this.screen[this.y + this.shift].dirty = true;
+                  this.nextLine();
+                }
                 break;
               case "\r":
-                this.x = 0;
+                if (!this.horizontalWrap) {
+                  this.x = 0;
+                }
                 break;
               case "\b":
                 if (this.x >= this.cols) {
@@ -869,20 +940,20 @@
                     ch = this.charset[ch];
                   }
                   if (this.x >= this.cols) {
-                    if (this.autowrap) {
-                      this.screen[this.y + this.shift].wrap = true;
-                      this.nextLine();
+                    if (this.horizontalWrap) {
+                      this.screen[this.y + this.shift].extra += ch;
+                    } else {
+                      if (this.autowrap) {
+                        this.screen[this.y + this.shift].wrap = true;
+                        this.nextLine();
+                      }
+                      this.x = 0;
                     }
-                    this.x = 0;
                   }
                   this.putChar(ch);
                   this.x++;
-                  if (this.forceWidth && ("\uff00" < ch && ch < "\uffef")) {
-                    if (this.cols < 2 || this.x >= this.cols) {
-                      this.putChar(" ");
-                      break;
-                    }
-                    this.putChar(" ");
+                  if (this.isCJK(ch)) {
+                    this.putChar(" ", true);
                     this.x++;
                   }
                 }
@@ -1283,8 +1354,7 @@
                       attr = this.cloneAttr(this.curAttr);
                       attr.html = "<div class=\"inline-html\">" + safe + "</div>";
                       this.screen[this.y + this.shift].chars[this.x] = attr;
-                      this.screen[this.y + this.shift].dirty = true;
-                      this.screen[this.y + this.shift].wrap = false;
+                      this.resetLine(this.screen[this.y + this.shift]);
                       this.nextLine();
                       break;
                     case "IMAGE":
@@ -1299,8 +1369,7 @@
                       attr = this.cloneAttr(this.curAttr);
                       attr.html = "<img class=\"inline-image\" src=\"data:" + mime + ";base64," + b64 + "\" />";
                       this.screen[this.y + this.shift].chars[this.x] = attr;
-                      this.screen[this.y + this.shift].dirty = true;
-                      this.screen[this.y + this.shift].wrap = false;
+                      this.resetLine(this.screen[this.y + this.shift]);
                       break;
                     case "PROMPT":
                       this.send(content);
@@ -1376,15 +1445,104 @@
       return this.write(data + "\r\n");
     };
 
+    Terminal.prototype.updateInputViews = function() {
+      var cursorPos;
+      cursorPos = this.cursor.getBoundingClientRect();
+      this.inputView.style['left'] = cursorPos.left + "px";
+      this.inputView.style['top'] = cursorPos.top + "px";
+      this.inputHelper.style['left'] = cursorPos.left + "px";
+      this.inputHelper.style['top'] = cursorPos.top + "px";
+      return this.inputHelper.value = "";
+    };
+
+    Terminal.prototype.compositionStart = function(ev) {
+      ev.preventDefault();
+      ev.stopPropagation();
+      this.updateInputViews();
+      this.inputView.className = "";
+      this.inputView.innerText = "";
+      this.cursor.style['visibility'] = "hidden";
+      this.inComposition = true;
+      this.compositionText = "";
+      return false;
+    };
+
+    Terminal.prototype.compositionUpdate = function(ev) {
+      ev.preventDefault();
+      ev.stopPropagation();
+      this.compositionText = ev.data;
+      this.inputView.innerText = this.compositionText;
+      return false;
+    };
+
+    Terminal.prototype.compositionEnd = function(ev) {
+      ev.preventDefault();
+      ev.stopPropagation();
+      this.finishComposition();
+      return false;
+    };
+
+    Terminal.prototype.finishComposition = function() {
+      this.inComposition = false;
+      this.showCursor();
+      this.inputHelper.value = "";
+      this.inputView.className = "hidden";
+      this.send(this.compositionText);
+      this.compositionText = "";
+      return this.inputHelper.focus();
+    };
+
     Terminal.prototype.keyDown = function(ev) {
-      var id, key, ref, t;
+      var key, ref;
+      if (this.inComposition) {
+        if (ev.keyCode === 229) {
+          return false;
+        } else if (ev.keyCode === 16 || ev.keyCode === 17 || ev.keyCode === 18) {
+          return false;
+        }
+        this.finishComposition();
+      }
+      if (ev.keyCode === 229) {
+        ev.preventDefault();
+        ev.stopPropagation();
+        setTimeout((function(_this) {
+          return function() {
+            var char, e, val;
+            if (!(_this.inComposition || _this.inputHelper.value.length > 1)) {
+              val = _this.inputHelper.value;
+              _this.inputHelper.value = "";
+              char = val.toUpperCase().charCodeAt(0);
+              if ((65 <= char && char <= 90)) {
+                e = new KeyboardEvent('keydown', {
+                  keyCode: char
+                });
+                if (window.mobileKeydown(e)) {
+                  return;
+                }
+              }
+              return _this.send(val);
+            }
+          };
+        })(this), 0);
+        return false;
+      }
       if (ev.keyCode > 15 && ev.keyCode < 19) {
         return true;
+      }
+      if (window.mobileKeydown(ev)) {
+        return true;
+      }
+      if (ev.keyCode === 19) {
+        this.body.classList.add('stopped');
+        this.out('\x03');
+        this.ws.shell.close();
+        return false;
       }
       if ((ev.shiftKey || ev.ctrlKey) && ev.keyCode === 45) {
         return true;
       }
       if ((ev.shiftKey && ev.ctrlKey) && ((ref = ev.keyCode) === 67 || ref === 86)) {
+        this.body.contentEditable = true;
         return true;
       }
       if (ev.altKey && ev.keyCode === 90 && !this.skipNextKey) {
@@ -1468,14 +1626,14 @@
             key = "\x1bOH";
             break;
           }
-          key = "\x1bOH";
+          key = "\x1b[H";
           break;
         case 35:
           if (this.applicationKeypad) {
             key = "\x1bOF";
             break;
           }
-          key = "\x1bOF";
+          key = "\x1b[F";
           break;
         case 33:
           if (ev.shiftKey) {
@@ -1546,23 +1704,6 @@
         default:
           if (ev.ctrlKey) {
             if (ev.keyCode >= 65 && ev.keyCode <= 90) {
-              if (ev.keyCode === 67) {
-                t = (new Date()).getTime();
-                if ((t - this.lastcc) < 500 && !this.stop) {
-                  id = setTimeout(function() {});
-                  while (id--) {
-                    if (id !== this.t_bell && id !== this.t_queue && id !== this.t_blink) {
-                      clearTimeout(id);
-                    }
-                  }
-                  this.body.classList.add('stopped');
-                  this.stop = true;
-                  return this.send(' \x7f');
-                } else if (this.stop) {
-                  return true;
-                }
-                this.lastcc = t;
-              }
               key = String.fromCharCode(ev.keyCode - 64);
             } else if (ev.keyCode === 32) {
               key = String.fromCharCode(0);
@@ -1668,7 +1809,7 @@
     };
 
     Terminal.prototype.resize = function(x, y, notif) {
-      var el, h, i, j, line, oldCols, oldRows, px, w;
+      var h, insert, k, len, len1, len2, len3, line, m, n, o, oldCols, oldRows, ref, ref1, ref2, ref3, w;
       if (x == null) {
         x = null;
       }
@@ -1682,11 +1823,13 @@
       oldRows = this.rows;
       this.computeCharSize();
       w = this.body.clientWidth;
-      h = this.html.clientHeight - (this.html.offsetHeight - this.html.scrollHeight);
+      h = this.html.clientHeight;
+      if (this.charSize.width === 0 || this.charSize.height === 0) {
+        console.error('Null size in refresh');
+        return;
+      }
       this.cols = x || Math.floor(w / this.charSize.width);
       this.rows = y || Math.floor(h / this.charSize.height);
-      px = h % this.charSize.height;
-      this.body.style['padding-bottom'] = px + "px";
       this.cols = Math.max(1, this.cols);
       this.rows = Math.max(1, this.rows);
       this.nativeScrollTo();
@@ -1694,93 +1837,82 @@
         return;
       }
       if (!notif) {
-        this.ctl('Resize', this.cols, this.rows);
+        this.ctl(JSON.stringify({
+          cmd: 'size',
+          cols: this.cols,
+          rows: this.rows
+        }));
       }
-      if (oldCols < this.cols) {
-        i = this.screen.length;
-        while (i--) {
-          while (this.screen[i].chars.length < this.cols) {
-            this.screen[i].chars.push(this.defAttr);
+      if (this.cols > oldCols) {
+        ref = this.screen;
+        for (k = 0, len = ref.length; k < len; k++) {
+          line = ref[k];
+          while (line.chars.length < this.cols) {
+            line.chars.push(this.defAttr);
           }
-          this.screen[i].wrap = false;
+          line.wrap = false;
         }
-      } else if (oldCols > this.cols) {
-        i = this.screen.length;
-        while (i--) {
-          while (this.screen[i].chars.length > this.cols) {
-            this.screen[i].chars.pop();
+        if (this.normal) {
+          ref1 = this.normal.screen;
+          for (m = 0, len1 = ref1.length; m < len1; m++) {
+            line = ref1[m];
+            while (line.chars.length < this.cols) {
+              line.chars.push(this.defAttr);
+            }
+            line.wrap = false;
+          }
+        }
+      } else if (this.cols < oldCols) {
+        ref2 = this.screen;
+        for (n = 0, len2 = ref2.length; n < len2; n++) {
+          line = ref2[n];
+          while (line.chars.length > this.cols) {
+            line.chars.pop();
+          }
+        }
+        if (this.normal) {
+          ref3 = this.normal.screen;
+          for (o = 0, len3 = ref3.length; o < len3; o++) {
+            line = ref3[o];
+            while (line.chars.length > this.cols) {
+              line.chars.pop();
+            }
           }
         }
       }
       this.setupStops(oldCols);
-      j = oldRows;
-      if (j < this.rows) {
-        el = this.body;
-        while (j++ < this.rows) {
-          if (this.screen.length < this.rows) {
-            this.screen.push(this.blankLine());
-          }
-          if (this.children.length < this.rows) {
-            line = this.document.createElement("div");
-            line.className = 'line';
-            el.appendChild(line);
-            this.children.push(line);
-          }
-        }
-      } else if (j > this.rows) {
-        while (j-- > this.rows) {
-          if (this.screen.length > this.rows) {
-            this.screen.pop();
-          }
-          if (this.children.length > this.rows) {
-            el = this.children.pop();
-            if (el != null) {
-              el.parentNode.removeChild(el);
-            }
-          }
-        }
+      if (this.term.childElementCount >= this.rows) {
+        this.y += this.rows - oldRows;
+        insert = 'unshift';
+      } else {
+        insert = 'push';
+      }
+      while (this.screen.length > this.rows) {
+        this.screen.shift();
+      }
+      while (this.screen.length < this.rows) {
+        this.screen[insert](this.blankLine(false, false));
       }
       if (this.normal) {
-        if (oldCols < this.cols) {
-          i = this.normal.screen.length;
-          while (i--) {
-            while (this.normal.screen[i].chars.length < this.cols) {
-              this.normal.screen[i].chars.push(this.defAttr);
-            }
-            this.normal.screen[i].wrap = false;
-          }
-        } else if (oldCols > this.cols) {
-          i = this.normal.screen.length;
-          while (i--) {
-            while (this.normal.screen[i].chars.length > this.cols) {
-              this.normal.screen[i].chars.pop();
-            }
-          }
+        while (this.normal.screen.length > this.rows) {
+          this.normal.screen.shift();
         }
-        j = oldRows;
-        if (j < this.rows) {
-          while (j++ < this.rows) {
-            if (this.normal.screen.length < this.rows) {
-              this.normal.screen.push(this.blankLine());
-            }
-          }
-        } else if (j > this.rows) {
-          while (j-- > this.rows) {
-            if (this.normal.screen.length > this.rows) {
-              this.normal.screen.pop();
-            }
-          }
+        while (this.normal.screen.length < this.rows) {
+          this.normal.screen[insert](this.blankLine(false, false));
         }
       }
       if (this.y >= this.rows) {
         this.y = this.rows - 1;
+      }
+      if (this.y < 0) {
+        this.y = 0;
       }
       if (this.x >= this.cols) {
         this.x = this.cols - 1;
       }
       this.scrollTop = 0;
       this.scrollBottom = this.rows - 1;
-      this.refresh(true);
+      this.refresh();
       if (!notif && (x || y)) {
         return this.reset();
       }
@@ -1854,8 +1986,7 @@
         line[x] = this.eraseAttr();
         x++;
       }
-      this.screen[y + this.shift].dirty = true;
-      return this.screen[y + this.shift].wrap = false;
+      return this.resetLine(this.screen[y + this.shift]);
     };
 
     Terminal.prototype.eraseLeft = function(x, y) {
@@ -1863,12 +1994,17 @@
       while (x--) {
         this.screen[y + this.shift].chars[x] = this.eraseAttr();
       }
-      this.screen[y + this.shift].dirty = true;
-      return this.screen[y + this.shift].wrap = false;
+      return this.resetLine(this.screen[y + this.shift]);
     };
 
     Terminal.prototype.eraseLine = function(y) {
       return this.eraseRight(0, y);
+    };
+
+    Terminal.prototype.resetLine = function(l) {
+      l.dirty = true;
+      l.wrap = false;
+      return l.extra = '';
     };
 
     Terminal.prototype.blankLine = function(cur, dirty) {
@@ -1889,7 +2025,8 @@
       return {
         chars: line,
         dirty: dirty,
-        wrap: false
+        wrap: false,
+        extra: ''
       };
     };
 
@@ -1929,22 +2066,10 @@
     };
 
     Terminal.prototype.clearScrollback = function() {
-      var group, k, len, len1, line, lines, m, ref, ref1;
-      lines = document.querySelectorAll('.line');
-      if (lines.length > this.rows) {
-        ref = Array.prototype.slice.call(lines, 0, lines.length - this.rows);
-        for (k = 0, len = ref.length; k < len; k++) {
-          line = ref[k];
-          line.remove();
-        }
-        ref1 = document.querySelectorAll('.group:empty');
-        for (m = 0, len1 = ref1.length; m < len1; m++) {
-          group = ref1[m];
-          group.remove();
-        }
-        lines = document.querySelectorAll('.line');
+      while (this.term.childElementCount > this.rows) {
+        this.term.firstChild.remove();
       }
-      return this.children = Array.prototype.slice.call(lines, -this.rows);
+      return this.emit('clear');
     };
 
     Terminal.prototype.tabSet = function() {
@@ -2261,7 +2386,7 @@
     };
 
     Terminal.prototype.deleteLines = function(params) {
-      var i, k, param, ref, ref1, results;
+      var i, k, node, param, ref, ref1, results;
       param = params[0];
       if (param < 1) {
         param = 1;
@@ -2270,8 +2395,8 @@
         this.screen.splice(this.scrollBottom + this.shift, 0, this.blankLine(true));
         this.screen.splice(this.y + this.shift, 1);
         if (!(this.normal || this.scrollTop !== 0 || this.scrollBottom !== this.rows - 1)) {
-          this.children[this.y + this.shift].remove();
-          this.children.splice(this.y + this.shift, 1);
+          node = this.term.childElementCount - this.rows + this.y + this.shift;
+          this.term.childNodes[node].remove();
         }
       }
       if (this.normal || this.scrollTop !== 0 || this.scrollBottom !== this.rows - 1) {
@@ -2293,8 +2418,7 @@
         this.screen[this.y + this.shift].chars.splice(this.x, 1);
         this.screen[this.y + this.shift].chars.push(this.eraseAttr());
       }
-      this.screen[this.y + this.shift].dirty = true;
-      return this.screen[this.y + this.shift].wrap = false;
+      return this.resetLine(this.screen[this.y + this.shift]);
     };
 
     Terminal.prototype.eraseChars = function(params) {
@@ -2307,8 +2431,7 @@
       while (param-- && j < this.cols) {
         this.screen[this.y + this.shift].chars[j++] = this.eraseAttr();
       }
-      this.screen[this.y + this.shift].dirty = true;
-      return this.screen[this.y + this.shift].wrap = false;
+      return this.resetLine(this.screen[this.y + this.shift]);
     };
 
     Terminal.prototype.charPosAbsolute = function(params) {
@@ -2444,6 +2567,8 @@
             return this.autowrap = true;
           case 66:
             return this.applicationKeypad = true;
+          case 77:
+            return this.horizontalWrap = true;
           case 9:
           case 1000:
           case 1002:
@@ -2523,6 +2648,8 @@
             return this.autowrap = false;
           case 66:
             return this.applicationKeypad = false;
+          case 77:
+            return this.horizontalWrap = false;
           case 9:
           case 1000:
           case 1002:
@@ -2823,8 +2950,7 @@
           while (i < l) {
             this.screen[i].chars.splice(this.x, 1);
             this.screen[i].chars.push(this.eraseAttr());
-            this.screen[i].dirty = true;
-            this.screen[i].wrap = false;
+            this.resetLine(this.screen[i].dirty);
             results1.push(i++);
           }
           return results1;

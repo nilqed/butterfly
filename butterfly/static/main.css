@@ -1,6 +1,6 @@
 /* *-* coding: utf-8 *-* */
 /* This file is part of butterfly */
-/* butterfly Copyright (C) 2015  Florian Mounier */
+/* butterfly Copyright(C) 2015-2017 Florian Mounier */
 /* This program is free software: you can redistribute it and/or modify */
 /* it under the terms of the GNU General Public License as published by */
 /* the Free Software Foundation, either version 3 of the License, or */
@@ -17,7 +17,7 @@
 /* These a the default variables */
 /* *-* coding: utf-8 *-* */
 /* This file is part of butterfly */
-/* butterfly Copyright (C) 2015  Florian Mounier */
+/* butterfly Copyright(C) 2015-2017 Florian Mounier */
 /* This program is free software: you can redistribute it and/or modify */
 /* it under the terms of the GNU General Public License as published by */
 /* the Free Software Foundation, either version 3 of the License, or */
@@ -40,7 +40,7 @@
 /* These are all imported files */
 /* *-* coding: utf-8 *-* */
 /* This file is part of butterfly */
-/* butterfly Copyright (C) 2015  Florian Mounier */
+/* butterfly Copyright(C) 2015-2017 Florian Mounier */
 /* This program is free software: you can redistribute it and/or modify */
 /* it under the terms of the GNU General Public License as published by */
 /* the Free Software Foundation, either version 3 of the License, or */
@@ -57,7 +57,7 @@
 /* You can change this file to import any webfont: */
 /* *-* coding: utf-8 *-* */
 /* This file is part of butterfly */
-/* butterfly Copyright (C) 2015  Florian Mounier */
+/* butterfly Copyright(C) 2015-2017 Florian Mounier */
 /* This program is free software: you can redistribute it and/or modify */
 /* it under the terms of the GNU General Public License as published by */
 /* the Free Software Foundation, either version 3 of the License, or */
@@ -70,37 +70,37 @@
 /* along with this program.  If not, see <http://www.gnu.org/licenses/>. */
 @font-face {
   font-family: "SourceCodePro";
-  src: url("/static/fonts/SourceCodePro-ExtraLight.otf") format("woff");
+  src: url("fonts/SourceCodePro-ExtraLight.otf") format("woff");
   font-weight: 100; }
 
 @font-face {
   font-family: "SourceCodePro";
-  src: url("/static/fonts/SourceCodePro-Light.otf") format("woff");
+  src: url("fonts/SourceCodePro-Light.otf") format("woff");
   font-weight: 300; }
 
 @font-face {
   font-family: "SourceCodePro";
-  src: url("/static/fonts/SourceCodePro-Regular.otf") format("woff");
+  src: url("fonts/SourceCodePro-Regular.otf") format("woff");
   font-weight: 400; }
 
 @font-face {
   font-family: "SourceCodePro";
-  src: url("/static/fonts/SourceCodePro-Medium.otf") format("woff");
+  src: url("fonts/SourceCodePro-Medium.otf") format("woff");
   font-weight: 500; }
 
 @font-face {
   font-family: "SourceCodePro";
-  src: url("/static/fonts/SourceCodePro-Semibold.otf") format("woff");
+  src: url("fonts/SourceCodePro-Semibold.otf") format("woff");
   font-weight: 600; }
 
 @font-face {
   font-family: "SourceCodePro";
-  src: url("/static/fonts/SourceCodePro-Bold.otf") format("woff");
+  src: url("fonts/SourceCodePro-Bold.otf") format("woff");
   font-weight: 700; }
 
 @font-face {
   font-family: "SourceCodePro";
-  src: url("/static/fonts/SourceCodePro-Black.otf") format("woff");
+  src: url("fonts/SourceCodePro-Black.otf") format("woff");
   font-weight: 900; }
 
 body {
@@ -111,7 +111,7 @@ body {
 /* You can comment / uncomment the following to enable/disable terminal effects. */
 /* *-* coding: utf-8 *-* */
 /* This file is part of butterfly */
-/* butterfly Copyright (C) 2015  Florian Mounier */
+/* butterfly Copyright(C) 2015-2017 Florian Mounier */
 /* This program is free software: you can redistribute it and/or modify */
 /* it under the terms of the GNU General Public License as published by */
 /* the Free Software Foundation, either version 3 of the License, or */
@@ -123,22 +123,17 @@ body {
 /* You should have received a copy of the GNU General Public License */
 /* along with this program.  If not, see <http://www.gnu.org/licenses/>. */
 body {
-  transition: 200ms;
+  transition: filter 200ms;
   transform-origin: bottom; }
   body.bell {
-    -webkit-filter: blur(2px);
     filter: blur(2px); }
   body.skip {
-    -webkit-filter: sepia(1);
     filter: sepia(1); }
   body.selection {
-    -webkit-filter: saturate(2);
     filter: saturate(2); }
   body.alarm {
-    -webkit-filter: hue-rotate(150deg);
     filter: hue-rotate(150deg); }
   body.dead {
-    -webkit-filter: grayscale(1);
     filter: grayscale(1); }
     body.dead:after {
       content: "CLOSED";
@@ -155,7 +150,6 @@ body {
       opacity: .2;
       font-weight: 900; }
   body.stopped {
-    -webkit-filter: brightness(50%);
     filter: brightness(50%); }
   body.locked::-webkit-scrollbar-thumb {
     background: rgba(255, 0, 0, 0.7); }
@@ -169,7 +163,7 @@ body {
 /* @import all_fx */
 /* *-* coding: utf-8 *-* */
 /* This file is part of butterfly */
-/* butterfly Copyright (C) 2015  Florian Mounier */
+/* butterfly Copyright(C) 2015-2017 Florian Mounier */
 /* This program is free software: you can redistribute it and/or modify */
 /* it under the terms of the GNU General Public License as published by */
 /* the Free Software Foundation, either version 3 of the License, or */
@@ -183,7 +177,7 @@ body {
 /* The color theme is defined in this one: */
 /* *-* coding: utf-8 *-* */
 /* This file is part of butterfly */
-/* butterfly Copyright (C) 2015  Florian Mounier */
+/* butterfly Copyright(C) 2015-2017 Florian Mounier */
 /* This program is free software: you can redistribute it and/or modify */
 /* it under the terms of the GNU General Public License as published by */
 /* the Free Software Foundation, either version 3 of the License, or */
@@ -357,7 +351,7 @@ body {
 
 /* *-* coding: utf-8 *-* */
 /* This file is part of butterfly */
-/* butterfly Copyright (C) 2015  Florian Mounier */
+/* butterfly Copyright(C) 2015-2017 Florian Mounier */
 /* This program is free software: you can redistribute it and/or modify */
 /* it under the terms of the GNU General Public License as published by */
 /* the Free Software Foundation, either version 3 of the License, or */
@@ -2792,7 +2786,7 @@ body {
 
 /* *-* coding: utf-8 *-* */
 /* This file is part of butterfly */
-/* butterfly Copyright (C) 2015  Florian Mounier */
+/* butterfly Copyright(C) 2015-2017 Florian Mounier */
 /* This program is free software: you can redistribute it and/or modify */
 /* it under the terms of the GNU General Public License as published by */
 /* the Free Software Foundation, either version 3 of the License, or */
@@ -2810,12 +2804,32 @@ html, body {
   color: #f4ead5; }
 
 body {
+  padding-bottom: .5em;
   white-space: nowrap;
   overflow-x: hidden;
   overflow-y: scroll;
   /* Pop ups */ }
+  body a {
+    text-decoration: underline rgba(244, 234, 213, 0.2);
+    transition: text-decoration-color 500ms; }
+    body a:hover {
+      text-decoration: underline; }
   body .line.active {
     background-color: transparent; }
+  body .line.extended {
+    cursor: zoom-in;
+    background-image: linear-gradient(90deg, rgba(9, 8, 10, 0), 95%, #09080a); }
+    body .line.extended .extra {
+      display: none; }
+    body .line.extended:not(.expanded):hover {
+      background-color: #161419; }
+    body .line.extended.expanded {
+      cursor: zoom-out;
+      background-color: #09080a; }
+      body .line.extended.expanded .extra {
+        display: block;
+        white-space: pre-wrap;
+        word-break: break-all; }
   body::-webkit-scrollbar {
     background: #110f13;
     width: 0.75em; }
@@ -2847,13 +2861,26 @@ body {
         display: block;
         padding: .5em;
         font-size: .75em; }
+  body #input-view {
+    position: fixed;
+    z-index: 100;
+    padding: 0;
+    margin: 0;
+    text-decoration: underline; }
+  body #input-helper {
+    position: fixed;
+    z-index: -100;
+    opacity: 0;
+    white-space: nowrap;
+    overflow: hidden;
+    resize: none; }
 
 .terminal {
   outline: none; }
 
 /* *-* coding: utf-8 *-* */
 /* This file is part of butterfly */
-/* butterfly Copyright (C) 2015  Florian Mounier */
+/* butterfly Copyright(C) 2015-2017 Florian Mounier */
 /* This program is free software: you can redistribute it and/or modify */
 /* it under the terms of the GNU General Public License as published by */
 /* the Free Software Foundation, either version 3 of the License, or */
@@ -2872,7 +2899,7 @@ body {
 
 /* *-* coding: utf-8 *-* */
 /* This file is part of butterfly */
-/* butterfly Copyright (C) 2015  Florian Mounier */
+/* butterfly Copyright(C) 2015-2017 Florian Mounier */
 /* This program is free software: you can redistribute it and/or modify */
 /* it under the terms of the GNU General Public License as published by */
 /* the Free Software Foundation, either version 3 of the License, or */

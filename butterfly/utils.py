@@ -1,7 +1,7 @@
 # *-* coding: utf-8 *-*
 # This file is part of butterfly
 #
-# butterfly Copyright (C) 2015  Florian Mounier
+# butterfly Copyright(C) 2015-2017 Florian Mounier
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
 # the Free Software Foundation, either version 3 of the License, or
@@ -18,13 +18,13 @@
 
 import os
 import pwd
-import time
-import sys
-import struct
-from logging import getLogger
-from collections import namedtuple
-import subprocess
 import re
+import struct
+import subprocess
+import sys
+import time
+from collections import namedtuple
+from logging import getLogger
 
 log = getLogger('butterfly')
 
@@ -168,7 +168,7 @@ def get_lsof_socket_line(addr, port):
     # May want to make this into a dictionary in the future...
     regex = "\w+\s+(?P<pid>\d+)\s+(?P<user>\w+).*\s" \
             "(?P<laddr>.*?):(?P<lport>\d+)->(?P<raddr>.*?):(?P<rport>\d+)"
-    output = subprocess.check_output(['lsof', '-Pni'])
+    output = subprocess.check_output(['lsof', '-Pni']).decode('utf-8')
     lines = output.split('\n')
     for line in lines:
         # Look for local address with peer port
@@ -208,10 +208,15 @@ def get_socket_env(inode, user):
             continue
         try:
             with open('/proc/%s/cmdline' % pid) as c:
-                if c.read().split('\x00')[0].split('/')[-1] in [
+                command = c.read().split('\x00')
+                executable = command[0].split('/')[-1]
+                if executable in ('sh', 'bash', 'zsh'):
+                    executable = command[1].split('/')[-1]
+                if executable in [
                         'gnome-session',
                         'gnome-session-binary',
                         'startkde',
+                        'startdde',
                         'xfce4-session']:
                     with open('/proc/%s/status' % pid) as e:
                         uid = None
@@ -289,11 +294,12 @@ def get_wtmp_file():
         if os.path.exists(file):
             return file
 
+
 UTmp = namedtuple(
-            'UTmp',
-            ['type', 'pid', 'line', 'id', 'user', 'host',
-             'exit0', 'exit1', 'session',
-             'sec', 'usec', 'addr0', 'addr1', 'addr2', 'addr3', 'unused'])
+    'UTmp',
+    ['type', 'pid', 'line', 'id', 'user', 'host',
+     'exit0', 'exit1', 'session',
+     'sec', 'usec', 'addr0', 'addr1', 'addr2', 'addr3', 'unused'])
 
 
 def utmp_line(id, type, pid, fd, user, host, ts):
@@ -402,5 +408,6 @@ class AnsiColors(object):
         if key == 'reset':
             return '\x1b[0m'
         return ''
+
 
 ansi_colors = AnsiColors()

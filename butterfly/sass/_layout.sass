@@ -1,7 +1,7 @@
 /* *-* coding: utf-8 *-* */
 /* This file is part of butterfly */
 
-/* butterfly Copyright (C) 2015  Florian Mounier */
+/* butterfly Copyright(C) 2015-2017 Florian Mounier */
 /* This program is free software: you can redistribute it and/or modify */
 /* it under the terms of the GNU General Public License as published by */
 /* the Free Software Foundation, either version 3 of the License, or */
@@ -22,12 +22,37 @@ html, body
   color: $fg
 
 body
+  padding-bottom: .5em
   white-space: nowrap
   overflow-x: hidden
   overflow-y: scroll
+  a
+    text-decoration: underline rgba($fg, .2)
+    transition: text-decoration-color 500ms
+    &:hover
+      text-decoration: underline
 
   .line.active
     background-color: $active-bg
+
+  .line.extended
+    cursor: zoom-in
+    background-image: linear-gradient(90deg, rgba(darken($bg, 3%), 0), 95%, darken($bg, 3%))
+
+    .extra
+      display: none
+
+    &:not(.expanded):hover
+      background-color: lighten($bg, 2%)
+
+    &.expanded
+      cursor: zoom-out
+      background-color: darken($bg, 3%)
+
+      .extra
+        display: block
+        white-space: pre-wrap
+        word-break: break-all
 
   &::-webkit-scrollbar
     background: $scroll-bg
@@ -67,6 +92,21 @@ body
         display: block
         padding: .5em
         font-size: .75em
+
+  #input-view
+    position: fixed
+    z-index: 100
+    padding: 0
+    margin: 0
+    text-decoration: underline
+
+  #input-helper
+    position: fixed
+    z-index: -100
+    opacity: 0
+    white-space: nowrap
+    overflow: hidden
+    resize: none
 
 .terminal
   outline: none

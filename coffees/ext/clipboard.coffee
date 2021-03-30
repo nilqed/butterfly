@@ -1,7 +1,7 @@
 # *-* coding: utf-8 *-*
 # This file is part of butterfly
 #
-# butterfly Copyright (C) 2015  Florian Mounier
+# butterfly Copyright(C) 2015-2017 Florian Mounier
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
 # the Free Software Foundation, either version 3 of the License, or
@@ -16,6 +16,7 @@
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 addEventListener 'copy', copy = (e) ->
+  document.getElementsByTagName('body')[0].contentEditable = false
   butterfly.bell "copied"
   e.clipboardData.clearData()
   sel = getSelection().toString().replace(
@@ -33,9 +34,19 @@ addEventListener 'copy', copy = (e) ->
   e.clipboardData.setData 'text/plain', data.slice(0, -1)
   e.preventDefault()
 
+
 addEventListener 'paste', (e) ->
+  document.getElementsByTagName('body')[0].contentEditable = false
   butterfly.bell "pasted"
   data = e.clipboardData.getData 'text/plain'
   data = data.replace(/\r\n/g, '\n').replace(/\n/g, '\r')
-  butterfly.send data
+  # Send big data in chunks to prevent data loss
+  size = 1024
+  send = ->
+    butterfly.send data.substring(0, size)
+    data = data.substring(size)
+    if data.length
+      setTimeout send, 25
+  send()
+
   e.preventDefault()
